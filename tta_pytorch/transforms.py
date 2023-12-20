@@ -7,6 +7,8 @@ from torchvision.transforms import functional as TF
 
 
 class _BaseTransform:
+    supproted_dtypes = ("image", "mask", "label")
+
     @abc.abstractmethod
     def __init__(self) -> None:
         pass
@@ -18,12 +20,6 @@ class _BaseTransform:
     @abc.abstractmethod
     def undo(self, param, *args, **kwargs):
         pass
-
-    def __len__(self):
-        return len(self.params)
-
-    def __add__(self, other):
-        return self.num_paths + other.num_paths
 
 
 class Rescale(_BaseTransform):
