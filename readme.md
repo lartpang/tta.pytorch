@@ -3,7 +3,7 @@
 ## Features
 
 - [x] Support image segmentation task.
-- [ ] Support image classification task.
+- [x] Support image classification task.
 
 ## Requirements
 
@@ -14,7 +14,7 @@
 
 ### Currently Effect
 
-See <./examples>
+See [usage.py](./examples/usage.py)
 
 ### Expected Effect
 

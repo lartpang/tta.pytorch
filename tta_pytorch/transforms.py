@@ -1,25 +1,12 @@
-import abc
-from functools import partial
+from enum import Enum
 from typing import List, Optional, Tuple, Union
 
+import torch
 import torch.nn.functional as F
 from torchvision.transforms import functional as TF
 
-
-class _BaseTransform:
-    supproted_dtypes = ("image", "mask", "label")
-
-    @abc.abstractmethod
-    def __init__(self) -> None:
-        pass
-
-    @abc.abstractmethod
-    def do(self, param, *args, **kwargs):
-        pass
-
-    @abc.abstractmethod
-    def undo(self, param, *args, **kwargs):
-        pass
+from .base import _BaseTransform
+from .utils import make_int_pair
 
 
 class Rescale(_BaseTransform):
@@ -28,144 +15,103 @@ class Rescale(_BaseTransform):
         scales: List[Union[int, float]],
         image_mode: Optional[str] = "bilinear",
         image_align_corners: Optional[bool] = False,
-        *,
-        mask_name: Optional[str] = None,
         mask_mode: Optional[str] = "bilinear",
         mask_align_corners: Optional[bool] = False,
     ):
-        """Multi-Scale Rescale Transformation.
-
-        Args:
-            scales (List[Union[int, float]]): _description_
-            image_mode (Optional[str], optional): _description_. Defaults to "bilinear".
-            image_align_corners (Optional[bool], optional): _description_. Defaults to False.
-            mask_name (Optional[str], optional): _description_. Defaults to None.
-            mask_mode (Optional[str], optional): _description_. Defaults to "bilinear".
-            mask_align_corners (Optional[bool], optional): _description_. Defaults to False.
-        """
-        super().__init__()
+        """Multi-Scale Rescale Transformation."""
         self.params = scales
         self.original_size = None
-
         self.image_mode = image_mode
-        self.image_func = partial(
-            F.interpolate,
-            mode=image_mode,
-            align_corners=image_align_corners,
+        self.image_align_corners = image_align_corners
+        self.mask_mode = mask_mode
+        self.mask_align_corners = mask_align_corners
+
+    def resize_image(self, image, size):
+        return F.interpolate(
+            image, size=size, mode=self.image_mode, align_corners=self.image_align_corners
         )
 
-        self.mask_name = mask_name or ""
-        if mask_name:
-            self.mask_func = partial(
-                F.interpolate,
-                mode=mask_mode,
-                align_corners=mask_align_corners,
-            )
+    def resize_mask(self, mask, size):
+        return F.interpolate(
+            mask, size=size, mode=self.mask_mode, align_corners=self.mask_align_corners
+        )
 
-    def do(self, param: float, **data):
-        for name, tensor in data.items():
-            h, w = tensor.shape[-2:]
-            tgt_hw = (int(h * param), int(w * param))
-            if name == self.mask_name:
-                data[name] = self.mask_func(tensor, size=tgt_hw)
-            else:
-                data[name] = self.image_func(tensor, size=tgt_hw)
+    def do_image(self, image: torch.Tensor, param: float):
+        h, w = image.shape[-2:]
         self.original_size = h, w
-        return data
+        return self.resize_image(image, size=(int(h * param), int(w * param)))
 
-    def undo(self, param: float, **data):
-        for name, tensor in data.items():
-            if name == self.mask_name:
-                data[name] = self.mask_func(tensor, size=self.original_size)
-            else:
-                data[name] = self.image_func(tensor, size=self.original_size)
-        self.original_size = None
-        return data
+    def undo_image(self, image: torch.Tensor, param: float):
+        return self.resize_image(image, size=self.original_size)
+
+    def undo_mask(self, mask: torch.Tensor, param: float):
+        return self.resize_mask(mask, size=self.original_size)
+
+    def undo_label(self, label: torch.Tensor, param: float):
+        return label
 
 
-class Resize(_BaseTransform):
+class Resize(Rescale):
     def __init__(
         self,
         sizes: List[Tuple[int]],
         image_mode: Optional[str] = "bilinear",
         image_align_corners: Optional[bool] = False,
-        *,
-        mask_name: Optional[str] = None,
         mask_mode: Optional[str] = "bilinear",
         mask_align_corners: Optional[bool] = False,
     ):
-        super().__init__()
-        paired_sizes = []
-        for s in sizes:
-            assert len(s) in [1, 2], sizes
-            if len(s) == 1:
-                s = (s, s)
-            paired_sizes.append(s)
-        self.params = paired_sizes
-        self.original_size = None
-
-        self.image_mode = image_mode
-        self.image_func = partial(
-            F.interpolate,
-            mode=image_mode,
-            align_corners=image_align_corners,
+        """Multi-Scale Resize Transformation."""
+        super().__init__(
+            scales=None,
+            image_mode=image_mode,
+            image_align_corners=image_align_corners,
+            mask_mode=mask_mode,
+            mask_align_corners=mask_align_corners,
         )
+        self.params = make_int_pair(sizes)
 
-        self.mask_name = mask_name or ""
-        if mask_name:
-            self.mask_func = partial(
-                F.interpolate,
-                mode=mask_mode,
-                align_corners=mask_align_corners,
-            )
-
-    def do(self, param: float, **data):
-        for name, tensor in data.items():
-            h, w = tensor.shape[-2:]
-            if name == self.mask_name:
-                data[name] = self.mask_func(tensor, size=param)
-            else:
-                data[name] = self.image_func(tensor, size=param)
+    def do_image(self, image: torch.Tensor, param: Union[Tuple[int, int], int]):
+        h, w = image.shape[-2:]
         self.original_size = h, w
-        return data
-
-    def undo(self, param: float, **data):
-        for name, tensor in data.items():
-            if name == self.mask_name:
-                data[name] = self.mask_func(tensor, size=self.original_size)
-            else:
-                data[name] = self.image_func(tensor, size=self.original_size)
-        self.original_size = None
-        return data
+        return self.resize_image(image, size=param)
 
 
-class HFlip(_BaseTransform):
+_FLIP_MODES = Enum("_FLIP_MODES", ["HFLIP", "VFLIP", "IDENTITY"])
+
+
+class Flip(_BaseTransform):
     def __init__(self) -> None:
-        super().__init__()
-        self.params = [False, True]
+        """Wrapped horizontal, vertical and identity transformations."""
+        self.params = [_FLIP_MODES.HFLIP, _FLIP_MODES.VFLIP, _FLIP_MODES.IDENTITY]
 
-    def do(self, param: bool, **data):
-        if param:
-            data = {k: TF.hflip(v) for k, v in data.items()}
-        return data
+    def flip(self, image, mode: _FLIP_MODES):
+        if mode is _FLIP_MODES.IDENTITY:
+            return image
+        elif mode is _FLIP_MODES.HFLIP:
+            return TF.hflip(image)
+        elif mode is _FLIP_MODES.VFLIP:
+            return TF.vflip(image)
+        else:
+            raise ValueError(f"Invalid Mode: {mode}")
 
-    def undo(self, param: bool, **data):
-        if param:
-            data = {k: TF.hflip(v) for k, v in data.items()}
-        return data
+    def do_image(self, image: torch.Tensor, param: _FLIP_MODES):
+        return self.flip(image, mode=param)
+
+    def undo_image(self, image: torch.Tensor, param: _FLIP_MODES):
+        return self.flip(image, mode=param)
+
+    def undo_mask(self, mask: torch.Tensor, param: _FLIP_MODES):
+        return self.flip(mask, mode=param)
+
+    def undo_label(self, label: torch.Tensor, param: _FLIP_MODES):
+        return label
 
 
-class VFlip(_BaseTransform):
+class HFlip(Flip):
     def __init__(self) -> None:
-        super().__init__()
-        self.params = [False, True]
+        self.params = [_FLIP_MODES.HFLIP, _FLIP_MODES.IDENTITY]
 
-    def do(self, param: bool, **data):
-        if param:
-            data = {k: TF.vflip(v) for k, v in data.items()}
-        return data
 
-    def undo(self, param: bool, **data):
-        if param:
-            data = {k: TF.vflip(v) for k, v in data.items()}
-        return data
+class VFlip(Flip):
+    def __init__(self) -> None:
+        self.params = [_FLIP_MODES.VFLIP, _FLIP_MODES.IDENTITY]

@@ -1,2 +1,3 @@
-from .base import Compose, Merger
-from .transforms import HFlip, Rescale, VFlip
+from .base import TYPES
+from .transforms import Flip, HFlip, Rescale, Resize, VFlip
+from .wrapper import Compose, Merger
