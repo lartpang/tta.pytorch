@@ -1,6 +1,6 @@
 import itertools
 from functools import partial, wraps
-from typing import List, Mapping, Optional, Tuple
+from typing import Callable, List, Mapping, Optional, Tuple
 
 import torch
 import torch.nn as nn
@@ -18,44 +18,43 @@ class Merger:
             raise ValueError(f"Not correct merge type `{mode}`.")
 
         self.mode = mode
-        self.output = {}
+        self.output = None
         self.num = 0
 
     def reset(self):
-        self.output = {}
+        self.output = None
         self.num = 0
 
-    def append(self, **data):
-        for name, tensor in data.items():
-            print(name, tensor.shape)
-            if tensor is None:
-                # remove the kv pair in merged output with the value None
-                continue
+    def append(self, tensor: torch.Tensor):
+        if tensor is None:
+            # remove the kv pair in merged output with the value None
+            return
 
-            if self.mode == "tsharpen":
-                tensor = tensor**0.5
+        if self.mode == "tsharpen":
+            tensor = tensor**0.5
 
-            if name not in self.output:
-                self.output[name] = tensor
-            elif self.mode in ["mean", "sum", "tsharpen"]:
-                self.output[name] = self.output[name] + tensor
-            elif self.mode == "gmean":
-                self.output[name] = self.output[name] * tensor
-            elif self.mode == "max":
-                self.output[name] = F.max(self.output[name], tensor)
-            elif self.mode == "min":
-                self.output[name] = F.min(self.output[name], tensor)
-            else:
-                raise ValueError(f"Not correct merge mode `{self.mode}`.")
+        if self.output is None:
+            self.output = tensor
+        elif self.mode in ["mean", "sum", "tsharpen"]:
+            self.output = self.output + tensor
+        elif self.mode == "gmean":
+            self.output = self.output * tensor
+        elif self.mode == "max":
+            self.output = F.max(self.output, tensor)
+        elif self.mode == "min":
+            self.output = F.min(self.output, tensor)
+        else:
+            raise ValueError(f"Not correct merge mode `{self.mode}`.")
+        self.num += 1
 
     @property
     def result(self) -> torch.Tensor:
         if self.mode in ["sum", "max", "min"]:
             result = self.output
         elif self.mode in ["mean", "tsharpen"]:
-            result = {k: v / self.num for k, v in self.output.items()}
+            result = self.output / self.num
         elif self.mode in ["gmean"]:
-            result = {k: v ** (1 / self.num) for k, v in self.output.items()}
+            result = self.output ** (1 / self.num)
         else:
             raise ValueError(f"Not correct merge mode `{self.mode}`.")
         return result
@@ -134,9 +133,7 @@ class Chain:
             image = t.undo_image(image=image, param=p)
             if self.verbose:
                 t_name = t.__class__.__name__
-                print(
-                    f"<<< Image {node_idx}: {t_name}.undo_image({p}) for {image.shape}"
-                )
+                print(f"<<< Image {node_idx}: {t_name}.undo_image({p}) for {image.shape}")
 
         return image
 
@@ -158,19 +155,13 @@ class Chain:
             label = t.undo_label(label=label, param=p)
             if self.verbose:
                 t_name = t.__class__.__name__
-                print(
-                    f"<<< Label {node_idx}: {t_name}.undo_label({p}) for {label.shape}"
-                )
+                print(f"<<< Label {node_idx}: {t_name}.undo_label({p}) for {label.shape}")
 
         return label
 
 
 class Compose:
-    def __init__(
-        self,
-        transforms: List[_BaseTransform],
-        verbose: Optional[bool] = False,
-    ):
+    def __init__(self, transforms: List[_BaseTransform], verbose: Optional[bool] = False):
         self.paths = self.flatten(transforms)
         self.verbose = verbose
         self.chain = partial(Chain, transforms=transforms, verbose=verbose)
@@ -181,7 +172,7 @@ class Compose:
         for idx, trans in enumerate(transforms):
             _params = [(idx, p) for p in trans.params]
             trans_params.append(_params)
-        # Use lists to facilitate repeated calls later.
+        # Use the type list to facilitate repeated calls later.
         return list(itertools.product(*trans_params))
 
     def __iter__(self) -> _BaseTransform:
@@ -195,39 +186,51 @@ class Compose:
 
     def decorate(
         self,
-        func: nn.Module,
         input_infos: Mapping[str, TYPES],
         output_infos: Mapping[str, TYPES],
         merge_mode="mean",
-    ):
+    ) -> Callable:
+        """
+        Args:
+            input_infos (Mapping[str, TYPES]): Types of inputs.
+            output_infos (Mapping[str, TYPES]): Types of outputs.
+            merge_mode (str, optional): Mode of the merger. Defaults to "mean".
+
+        Returns:
+            Callable: Decorator function for wrapping the tta processing.
+        """
         if not all([isinstance(t, TYPES) for t in input_infos.values()]):
             raise ValueError(f"all types in {input_infos} must be one of TYPES!")
         if not all([isinstance(t, TYPES) for t in output_infos.values()]):
             raise ValueError(f"all types in {output_infos} must be one of TYPES!")
 
-        tta_merger = Merger(mode=merge_mode)
+        def decorator(func: Callable):
+            tta_merger = {k: Merger(mode=merge_mode) for k in output_infos.keys()}
 
-        @wraps(func)
-        def inner(**inputs):
-            tta_merger.reset()
-            for t in self:
-                # do all augmentation operations for all inputs
-                do_inputs = {}
-                for input_name, i_type in input_infos.items():
-                    do_func = getattr(t, f"do_{i_type.value}")
-                    do_inputs[input_name] = do_func(inputs[input_name])
+            @wraps(func)
+            def inner(**inputs: Mapping[str, torch.Tensor]) -> Mapping[str, torch.Tensor]:
+                {k: v.reset() for k, v in tta_merger.items()}
 
-                # do something
-                outputs = func(**do_inputs)
-                assert isinstance(outputs, Mapping), "Only support the mapping type."
+                for t in self:
+                    # do all augmentation operations for all inputs
+                    do_inputs = {}
+                    for i_name, i_type in input_infos.items():
+                        do_func = getattr(t, f"do_{i_type.value}")
+                        do_inputs[i_name] = do_func(inputs[i_name])
 
-                # undo all augmentation operations and merge all outputs
-                undo_outputs = {}
-                for output_name, o_type in output_infos.items():
-                    undo_func = getattr(t, f"undo_{o_type.value}")
-                    undo_outputs[output_name] = undo_func(outputs[output_name])
+                    # do something
+                    outputs: Mapping[str, torch.Tensor] = func(**do_inputs)
+                    assert isinstance(outputs, Mapping), "Only support the mapping type."
 
-                tta_merger.append(**undo_outputs)
-            return tta_merger.result
+                    # undo all augmentation operations and merge all outputs
+                    undo_outputs = {}
+                    for o_name, o_type in output_infos.items():
+                        undo_func = getattr(t, f"undo_{o_type.value}")
+                        undo_outputs[o_name] = undo_func(outputs[o_name])
 
-        return inner
+                    {k: v.append(undo_outputs[k]) for k, v in tta_merger.items()}
+                return {k: v.result for k, v in tta_merger.items()}
+
+            return inner
+
+        return decorator
