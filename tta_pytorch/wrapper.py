@@ -78,7 +78,7 @@ class Chain:
 
         if self.verbose:
             shapes = {t.name: x.shape for x, t in zip(inputs, input_types)}
-            print(f">>> Inputs: {shapes}")
+            print(f"Inputs: {shapes}")
 
         for node_idx in range(self.num_paths):
             idx, p = self.path[node_idx]
@@ -89,9 +89,7 @@ class Chain:
 
                 if self.verbose:
                     t_name = t.__class__.__name__
-                    print(
-                        f">>> Node{node_idx}: {t_name}.do_{i_type.value}({p}) for {inputs[i].shape}"
-                    )
+                    print(f"> {node_idx}: {t_name}.do_{i_type.value}({p}) for {inputs[i].shape}")
         return inputs
 
     def undo_all(self, outputs: List[torch.Tensor], output_types: List[TYPES]):
@@ -107,14 +105,12 @@ class Chain:
 
                 if self.verbose:
                     t_name = t.__class__.__name__
-                    print(
-                        f">>> Node{node_idx}: {t_name}.do_{o_type.value}({p}) for {outputs[i].shape}"
-                    )
+                    print(f"< {node_idx}: {t_name}.do_{o_type.value}({p}) for {outputs[i].shape}")
         return outputs
 
     def do_image(self, image):
         if self.verbose:
-            print(f">>> Image Input: {image.shape}")
+            print(f"Image Input: {image.shape}")
 
         for node_idx in range(self.num_paths):
             idx, p = self.path[node_idx]
@@ -122,7 +118,7 @@ class Chain:
             image = t.do_image(image=image, param=p)
             if self.verbose:
                 t_name = t.__class__.__name__
-                print(f">>> Node{node_idx}: {t_name}.do_image({p}) for {image.shape}")
+                print(f"> {node_idx}: {t_name}.do_image({p}) for {image.shape}")
 
         return image
 
@@ -133,7 +129,7 @@ class Chain:
             image = t.undo_image(image=image, param=p)
             if self.verbose:
                 t_name = t.__class__.__name__
-                print(f"<<< Image {node_idx}: {t_name}.undo_image({p}) for {image.shape}")
+                print(f"< {node_idx}: {t_name}.undo_image({p}) for {image.shape}")
 
         return image
 
@@ -144,7 +140,7 @@ class Chain:
             mask = t.undo_mask(mask=mask, param=p)
             if self.verbose:
                 t_name = t.__class__.__name__
-                print(f"<<< Mask {node_idx}: {t_name}.undo_mask({p}) for {mask.shape}")
+                print(f"< {node_idx}: {t_name}.undo_mask({p}) for {mask.shape}")
 
         return mask
 
@@ -155,21 +151,21 @@ class Chain:
             label = t.undo_label(label=label, param=p)
             if self.verbose:
                 t_name = t.__class__.__name__
-                print(f"<<< Label {node_idx}: {t_name}.undo_label({p}) for {label.shape}")
+                print(f"< {node_idx}: {t_name}.undo_label({p}) for {label.shape}")
 
         return label
 
 
 class Compose:
     def __init__(self, transforms: List[_BaseTransform], verbose: Optional[bool] = False):
-        self.paths = self.flatten(transforms)
+        self.transforms = transforms
+        self.paths = self.flatten_transforms()
         self.verbose = verbose
         self.chain = partial(Chain, transforms=transforms, verbose=verbose)
 
-    @staticmethod
-    def flatten(transforms):
+    def flatten_transforms(self):
         trans_params = []
-        for idx, trans in enumerate(transforms):
+        for idx, trans in enumerate(self.transforms):
             _params = [(idx, p) for p in trans.params]
             trans_params.append(_params)
         # Use the type list to facilitate repeated calls later.
@@ -183,6 +179,16 @@ class Compose:
 
     def __len__(self) -> int:
         return len(self.paths)
+
+    def __repr__(self) -> str:
+        descriptions = ["All TTA Paths:"]
+        for path_idx, path in enumerate(self.paths):
+            path_description = f"- Path {path_idx}:"
+            for node_idx, node_value in path:
+                t_name = self.transforms[node_idx].__class__.__name__
+                path_description += f" - {t_name}.do_*({node_value})"
+            descriptions.append(path_description)
+        return "\n".join(descriptions)
 
     def decorate(
         self,

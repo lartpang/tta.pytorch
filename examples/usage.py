@@ -139,3 +139,5 @@ if __name__ == "__main__":
     assert torch.allclose(results0, results3)
     assert torch.allclose(results0, results4)
     print("All tests passed!")
+
+    print(tta_trans)
