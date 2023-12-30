@@ -4,7 +4,7 @@ from typing import List
 import torch
 
 sys.path.append("../")
-from tta_pytorch import TYPES, Chain, Compose, Flip, HFlip, Merger, Rescale, Resize, VFlip
+from tta_pytorch import TYPES, Chain, Compose, Flip, HFlip, Merger, Rescale, Resize, Rotate, VFlip
 
 tta_trans = Compose(
     [
@@ -24,7 +24,11 @@ tta_trans = Compose(
         ),
         Flip(),
         HFlip(),
-        # VFlip(),
+        Rotate(
+            angles=[15, 45],
+            image_mode="bilinear",
+            mask_mode="bilinear",
+        ),
     ],
     verbose=True,
 )
