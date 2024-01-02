@@ -108,42 +108,47 @@ class Rotate(_BaseTransform):
         return label
 
 
-_FLIP_MODES = Enum("_FLIP_MODES", ["HFLIP", "VFLIP", "IDENTITY"])
+FLIP_MODES = Enum("FLIP_MODES", ["Horizontal", "Vertical", "Identity", "HorizontalVertical"])
 
 
 class Flip(_BaseTransform):
-    def __init__(self) -> None:
+    def __init__(self, flip_modes: List[FLIP_MODES]) -> None:
         """Wrapped horizontal, vertical and identity transformations."""
-        self.params = [_FLIP_MODES.HFLIP, _FLIP_MODES.VFLIP, _FLIP_MODES.IDENTITY]
+        assert all(mode in FLIP_MODES for mode in flip_modes)
+        self.params = flip_modes
 
-    def flip(self, image, mode: _FLIP_MODES):
-        if mode is _FLIP_MODES.IDENTITY:
+    def flip(self, image, mode: FLIP_MODES):
+        if mode is FLIP_MODES.Identity:
             return image
-        elif mode is _FLIP_MODES.HFLIP:
+        elif mode is FLIP_MODES.Horizontal:
             return TF.hflip(image)
-        elif mode is _FLIP_MODES.VFLIP:
+        elif mode is FLIP_MODES.Vertical:
             return TF.vflip(image)
+        elif mode is FLIP_MODES.HorizontalVertical:
+            return TF.vflip(TF.hflip(image))
         else:
             raise ValueError(f"Invalid Mode: {mode}")
 
-    def do_image(self, image: torch.Tensor, param: _FLIP_MODES):
+    def do_image(self, image: torch.Tensor, param: FLIP_MODES):
         return self.flip(image, mode=param)
 
-    def undo_image(self, image: torch.Tensor, param: _FLIP_MODES):
+    def undo_image(self, image: torch.Tensor, param: FLIP_MODES):
         return self.flip(image, mode=param)
 
-    def undo_mask(self, mask: torch.Tensor, param: _FLIP_MODES):
+    def undo_mask(self, mask: torch.Tensor, param: FLIP_MODES):
         return self.flip(mask, mode=param)
 
-    def undo_label(self, label: torch.Tensor, param: _FLIP_MODES):
+    def undo_label(self, label: torch.Tensor, param: FLIP_MODES):
         return label
 
 
 class HFlip(Flip):
     def __init__(self) -> None:
-        self.params = [_FLIP_MODES.HFLIP, _FLIP_MODES.IDENTITY]
+        """Horizontally Flipping == Flip(flip_modes=[FLIP_MODES.Horizontal, FLIP_MODES.Identity])"""
+        self.params = [FLIP_MODES.Horizontal, FLIP_MODES.Identity]
 
 
 class VFlip(Flip):
     def __init__(self) -> None:
-        self.params = [_FLIP_MODES.VFLIP, _FLIP_MODES.IDENTITY]
+        """Vertically Flipping == Flip(flip_modes=[FLIP_MODES.Vertical, FLIP_MODES.Identity])"""
+        self.params = [FLIP_MODES.Vertical, FLIP_MODES.Identity]
